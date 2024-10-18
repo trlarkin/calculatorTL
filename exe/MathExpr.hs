@@ -14,8 +14,8 @@ data MathExpr
     | Neg MathExpr
     | Recip MathExpr
     | Exp MathExpr MathExpr
-    | Mul MathExpr MathExpr
-    | Add MathExpr MathExpr
+    | Factors [MathExpr]
+    | Terms [MathExpr]
     deriving (Eq, Ord)
 
 -- data Expr 
@@ -36,22 +36,39 @@ data MathExpr
 --     | Enclosed Expr
 --     | Func 
 
+-- class 
+
+infix 4 =$= 
+
+(=$=) :: MathExpr -> MathExpr -> Bool
+Var x1 =$= Exp (Var x2) _
+    | x1 == x2  = True
+    | otherwise = False
+e1 =$= e2 = e1 == e2
+
 instance Show MathExpr where
     show :: MathExpr -> String
     show e = case e of
         Symbolic s              -> show s
         N n                     -> if n == (fromIntegral . round) n then show (truncate n) else show n
-        Var x               -> x
+        Var x                   -> x
         Neg u | isUnit u        -> "-" ++ show u
         Neg e1                  -> "-" ++ "(" ++ show e1 ++ ")"
-        Add e1 (Neg e2)         -> show e1 ++ " - " ++ show e2
-        Add e1 e2               -> show e1 ++ " + " ++ show e2
+        Terms (t1: Neg t2 :ts)  -> show t1 ++ "-" ++ show (Terms (t2:ts))
+        Terms (t1:t2:ts)        -> show t1 ++ "+" ++ show (Terms (t2:ts)) 
+        Terms [t1]              -> show t1
+        Terms []                -> ""
         Recip u | isUnit u      -> "1/" ++ show u
         Recip e1                -> "1/(" ++ show e1 ++ ")"
-        Mul e1 (Recip e2)       -> show e1 ++ " / " ++ show e2
-        Mul (Var x1) e2         -> x1 ++ show e2
-        Mul e1 (Var x2)         -> "(" ++ show e1 ++ ")" ++ x2
-        Mul e1 e2               -> "(" ++ show e1 ++ ")" ++ show e2
+        Factors (f1 : Recip f2 : fs)        -> show f1 ++ " / " ++ show (Factors (f2:fs))
+        Factors (N n1 : e2@(N _) :fs)       -> show n1 ++ " * " ++ show (Factors (e2:fs))
+        Factors (f1:f2:fs)                  -> show f1 ++ show (Factors (f2:fs))
+        Factors [f1]                        -> show f1
+        Factors []                          -> ""
+        -- Mul e1 (Recip e2)       -> show e1 ++ " / " ++ show e2
+        -- Mul (Var x1) e2         -> x1 ++ show e2
+        -- Mul e1 (Var x2)         -> "(" ++ show e1 ++ ")" ++ x2
+        -- Mul e1 e2               -> "(" ++ show e1 ++ ")" ++ show e2
         Exp u1 u2 | all isUnit [u1, u2]          
                                 -> show u1 ++ "^" ++ show u2 
         Exp u1 e2 | isUnit u1   -> show u1 ++ "^" ++ "(" ++ show e2 ++ ")"
@@ -91,9 +108,9 @@ isUnit e = case e of
     N _           -> True
     Var _         -> True
     Neg _         -> False -- funky case, will err on side of not unit
-    Add _ _       -> False -- x * y + z /= x * (y + z)
+    Terms _       -> False -- x * y + z /= x * (y + z)
     Recip _       -> False -- 1/1/x /= 1/(1/x)
-    Mul _ _       -> False -- 1/x * y /= 1/(x * y)
+    Factors _     -> False -- 1/x * y /= 1/(x * y)
     Exp _ _       -> False -- unproven TODO
 
 
@@ -109,9 +126,9 @@ isAtom e = case e of
     N _         -> True
     Var _       -> False -- (Var v) is not Atom, it should be wrapped by a Symbolic first
     Neg _       -> False
-    Add _ _     -> False
+    Terms _     -> False
     Recip _     -> False
-    Mul _ _     -> False
+    Factors _   -> False
     Exp _ _     -> False
 
 
@@ -131,16 +148,15 @@ evalStep e = case e of
     N n                                 -> N n
     Var x                               -> Symbolic $ Var x
 
-    Neg (Symbolic s1)                    -> Symbolic $ Neg s1
+    Neg (Symbolic s1)                   -> Symbolic $ Neg s1
     Neg (N n1)                          -> N (- n1)
     Neg e1                              -> Neg (evalStep e1)
 
-    Add (Symbolic s1) (Symbolic s2)     -> Symbolic (Add s1 s2)
-    Add (N n1) (N n2)                   -> N (n1 + n2)
-    Add (Symbolic s1) n2@(N _)          -> Symbolic (Add s1 n2)
-    Add n1@(N _) (Symbolic s2)          -> Symbolic (Add n1 s2)
-    Add v1 e2 | isAtom v1              -> Add v1 (evalStep e2)
-    Add e1 e2                           -> Add (evalStep e1) e2
+    -- Add (N n1) (N n2)                   -> N (n1 + n2)
+    -- Add (Symbolic s1) n2@(N _)          -> Symbolic (Add s1 n2)
+    -- Add n1@(N _) (Symbolic s2)          -> Symbolic (Add n1 s2)
+    -- Add v1 e2 | isAtom v1              -> Add v1 (evalStep e2)
+    -- Add e1 e2                           -> Add (evalStep e1) e2
 
     Recip (Symbolic s1)                 -> Symbolic (Recip s1)
     Recip (N n1)                        -> if n1 == 0 
@@ -150,9 +166,16 @@ evalStep e = case e of
 
     -- vvvv These are abstraction that are alternative to the above vvvv
     -- Add e1 e2                           -> twoArgumentCase Add (+) e1 e2 -- add is explicit to help with readability
-    Mul e1 e2                           -> twoArgumentCase Mul (*) e1 e2
+    Terms es                            -> commutatingOperator Factors (*) es
     Exp e1 e2                           -> twoArgumentCase Exp (**) e1 e2
 
+commutatingOperator :: ([MathExpr] -> MathExpr) -> (Float -> Float -> Float) -> [MathExpr] -> MathExpr
+-- commutatingOperator mathExprOp _ (Symbolic s1 : Symbolic s2 : es)   = Symbolic (mathExprOp s1 s2) 
+-- commutatingOperator mathExprOp _ (Symbolic s1) n2@(N _)             = Symbolic (mathExprOp s1 n2) 
+-- commutatingOperator mathExprOp _ n1@(N _) (Symbolic s2)             = Symbolic (mathExprOp n1 s2) 
+commutatingOperator mathExprOp floatOp (N n1 : N n2 : es)           = mathExprOp $ (N (n1 `floatOp` n2) : es)
+commutatingOperator mathExprOp _ (v1 : e2 : es) | isAtom v1         = mathExprOp v1 (evalStep e2) 
+commutatingOperator mathExprOp _ (e1 : e2 : es)                     = mathExprOp (evalStep e1) e2 
 
 twoArgumentCase :: (MathExpr -> MathExpr -> MathExpr)-> (Float -> Float -> Float) -> MathExpr -> MathExpr -> MathExpr
 twoArgumentCase mathExprOp _ (Symbolic s1) (Symbolic s2)    = Symbolic (mathExprOp s1 s2)
@@ -167,21 +190,19 @@ twoArgumentCase mathExprOp _ e1 e2                          = mathExprOp (evalSt
 -- Mul (N 2.0) (Mul (N 2.0) (Var "x"))
 
 lengthTerms :: Num p => MathExpr -> p
-lengthTerms (Add _ e2) = 1 + lengthTerms e2
-lengthTerms _ = 0
+lengthTerms (Terms ts) = length ts
 
 sortTerms :: MathExpr -> MathExpr
-sortTerms e1 = foldr1 (.) (replicate n bubbleTerms) e1 
-    where n = lengthTerms e1
+sortTerms (Terms ts) = Terms (sort ts)
 
-bubbleTerms :: MathExpr -> MathExpr
-bubbleTerms (Add e1 (Add e2 e3))
-    | e2 < e1   = Add e2 $ bubbleTerms (Add e1 e3)
-    | otherwise = Add e1 $ bubbleTerms (Add e2 e3)
-bubbleTerms (Add e1 e2)
-    | e2 < e1   = Add e2 e1
-    | otherwise = Add e1 e2
-bubbleTerms e1 = e1
+-- bubbleTerms :: MathExpr -> MathExpr
+-- bubbleTerms (Add e1 (Add e2 e3))
+--     | e2 < e1   = Add e2 $ bubbleTerms (Add e1 e3)
+--     | otherwise = Add e1 $ bubbleTerms (Add e2 e3)
+-- bubbleTerms (Add e1 e2)
+--     | e2 < e1   = Add e2 e1
+--     | otherwise = Add e1 e2
+-- bubbleTerms e1 = e1
 
 {- |
 Does a single symbolic simplification step. The trivial case is seeing a variable:
@@ -191,15 +212,15 @@ Does a single symbolic simplification step. The trivial case is seeing a variabl
 symbolicStep :: MathExpr -> MathExpr
 symbolicStep (Symbolic s) = Symbolic $ symbolicStep s
 symbolicStep s = trace (show s) $ case s of
-    Add (Var x1) (Var x2) 
-        | x1 == x2                  -> Mul (N 2) (Var x1)
-    Add v1 v2 
+    Terms (Var x1 : Var x2 : _) 
+        | x1 == x2                  -> Terms (Factors [N 2, Var x1])
+    Terms (v1 : v2 : _) 
         | all isAtom [v1, v2]       -> Add v2 v1
-    Add v1 e2 
+    Terms (v1 : e2 : _) 
         | isAtom v1                 -> Add v1 (symbolicStep e2)
-    Add e1 e2                       -> Add (symbolicStep e1) e2
-    Mul (Var x1) (Var x2) 
-        | x1 == x2                  -> Exp (Var x1) (N 2)
+    Terms (e1 : e2 : _)             -> Add (symbolicStep e1) e2
+    -- Mul (Var x1) (Var x2) 
+    --     | x1 == x2                  -> Exp (Var x1) (N 2)
     N n1                            -> N n1
     Var x1                          -> Var x1
 --     N n -> N n
