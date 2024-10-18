@@ -23,18 +23,18 @@ pTerm = pExponentiation `pMul` pTerm
     <?> "term"
 
 pExponentiation :: Parser MathExpr
-pExponentiation = pBasic `pPowerOf` pExponentiation
-    <|> pBasic
+pExponentiation = pAtom `pPowerOf` pExponentiation
+    <|> pAtom
 
-pBasic :: Parser MathExpr
-pBasic = pNumber <|> pVar <|> pEnclosedMath
+pAtom :: Parser MathExpr
+pAtom = pNumber <|> pVar <|> pEnclosedMath
 
 -- ^^^^^^^^^^ Grammar ^^^^^^^^^^
 
 pEnclosed :: Parser a -> Parser a
-pEnclosed p = try (char '(' *> p <* char ')')
-          <|> try (char '{' *> p <* char '}')
-          <|> try (char '[' *> p <* char ']')
+pEnclosed p = char '(' *> p <* char ')'
+          <|> char '{' *> p <* char '}'
+          <|> char '[' *> p <* char ']'
 
 pEnclosedMath :: Parser MathExpr
 pEnclosedMath = pEnclosed pMathExpr <?> "parenthesized expression"
@@ -74,7 +74,5 @@ pVar = try $  Var . (:[]) <$> letter
 doParse :: String -> Either ParseError MathExpr
 doParse = parse (pMathExpr <* eof) ""
 
--- >>> parseTest pMathExpr "3"
--- No instance for (Show (String -> IO ()))
---   arising from a use of ‘evalPrint’
---   (maybe you haven't applied a function to enough arguments?)
+-- >>> doParse "3*3*3"
+-- Right (3)(3)3

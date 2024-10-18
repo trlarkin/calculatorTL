@@ -1,18 +1,40 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE StrictData #-}
 {-# OPTIONS_GHC -Wno-type-defaults #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module MathExpr where
+import Debug.Trace (trace)
+
 
 data MathExpr
     = Symbolic MathExpr -- comes from evaluation
-    | N Float
-    | Var String
+    | N !Float
+    | Var !String
     | Neg MathExpr
-    | Add MathExpr MathExpr
     | Recip MathExpr
-    | Mul MathExpr MathExpr
     | Exp MathExpr MathExpr
+    | Mul MathExpr MathExpr
+    | Add MathExpr MathExpr
+    deriving (Eq, Ord)
+
+-- data Expr 
+--     = Add' Term Expr
+--     | JustTerm Term
+
+-- data Term 
+--     = Mul' Pow Term
+--     | JustPow Pow
+
+-- data Pow
+--     = Pow Atom Pow
+--     | JustAtom Atom
+
+-- data Atom 
+--     = Num Float
+--     | Var' String
+--     | Enclosed Expr
+--     | Func 
 
 instance Show MathExpr where
     show :: MathExpr -> String
@@ -76,16 +98,16 @@ isUnit e = case e of
 
 
 {- |
-Checks if this is a "basic" MathExpr. Basic here means there is no more 
+Checks if this is an "Atom" MathExpr. Atom here means there is no more 
 numerical solving to be done. A True result implies the MathExpr is 
 just a number or is a symbolic expression that needs a more powerful 
 evaluation function to do more work.  
 -}
-isBasic :: MathExpr -> Bool
-isBasic e = case e of
+isAtom :: MathExpr -> Bool
+isAtom e = case e of
     Symbolic _  -> True
     N _         -> True
-    Var _       -> False -- (Var v) is not basic, it should be wrapped by a Symbolic first
+    Var _       -> False -- (Var v) is not Atom, it should be wrapped by a Symbolic first
     Neg _       -> False
     Add _ _     -> False
     Recip _     -> False
@@ -94,8 +116,8 @@ isBasic e = case e of
 
 
 eval :: MathExpr -> MathExpr
-eval s@(Symbolic _)   = s
-eval n@(N _)          = n
+eval n@(N _)        = n
+eval s@(Symbolic _) = eval $ symbolicStep s
 eval e              = eval $ evalStep e
 
 {- |
@@ -117,7 +139,7 @@ evalStep e = case e of
     Add (N n1) (N n2)                   -> N (n1 + n2)
     Add (Symbolic s1) n2@(N _)          -> Symbolic (Add s1 n2)
     Add n1@(N _) (Symbolic s2)          -> Symbolic (Add n1 s2)
-    Add v1 e2 | isBasic v1              -> Add v1 (evalStep e2)
+    Add v1 e2 | isAtom v1              -> Add v1 (evalStep e2)
     Add e1 e2                           -> Add (evalStep e1) e2
 
     Recip (Symbolic s1)                 -> Symbolic (Recip s1)
@@ -126,36 +148,73 @@ evalStep e = case e of
                                             else N (1 / n1) -- needs to add divide by 0 support
     Recip e1                            -> Recip (evalStep e1)
 
-    Mul (Symbolic s1) (Symbolic s2)     -> Symbolic (Mul s1 s2)
-    Mul (Symbolic s1) n2@(N _)          -> Symbolic (Mul s1 n2)
-    Mul n1@(N _) (Symbolic s2)          -> Symbolic (Mul n1 s2)
-    Mul (N n1) (N n2)                   -> N (n1 * n2)
-    Mul v1 e2 | isBasic v1              -> Mul v1 (evalStep e2)
-    Mul e1 e2                           -> Mul (evalStep e1) e2
+    -- vvvv These are abstraction that are alternative to the above vvvv
+    -- Add e1 e2                           -> twoArgumentCase Add (+) e1 e2 -- add is explicit to help with readability
+    Mul e1 e2                           -> twoArgumentCase Mul (*) e1 e2
+    Exp e1 e2                           -> twoArgumentCase Exp (**) e1 e2
 
-    Exp (Symbolic s1) (Symbolic s2)     -> Symbolic (Exp s1 s2)
-    Exp (Symbolic s1) n2@(N _)          -> Symbolic (Exp s1 n2)
-    Exp n1@(N _) (Symbolic s2)          -> Symbolic (Exp n1 s2)
-    Exp (N n1) (N n2)                   -> N (n1 ** n2)
-    Exp v1 e2 | isBasic v1              -> Exp v1 (evalStep e2)
-    Exp e1 e2                           -> Exp (evalStep e1) e2
+
+twoArgumentCase :: (MathExpr -> MathExpr -> MathExpr)-> (Float -> Float -> Float) -> MathExpr -> MathExpr -> MathExpr
+twoArgumentCase mathExprOp _ (Symbolic s1) (Symbolic s2)    = Symbolic (mathExprOp s1 s2)
+twoArgumentCase mathExprOp _ (Symbolic s1) n2@(N _)         = Symbolic (mathExprOp s1 n2)
+twoArgumentCase mathExprOp _ n1@(N _) (Symbolic s2)         = Symbolic (mathExprOp n1 s2)
+twoArgumentCase _ floatOp (N n1) (N n2)                     = N (n1 `floatOp` n2)
+twoArgumentCase mathExprOp _ v1 e2 | isAtom v1              = mathExprOp v1 (evalStep e2)
+twoArgumentCase mathExprOp _ e1 e2                          = mathExprOp (evalStep e1) e2
+
+
+-- >>> symbolicStep (Mul (N 2) (Mul (Var "x") (N 2)))
+-- Mul (N 2.0) (Mul (N 2.0) (Var "x"))
+
+lengthTerms :: Num p => MathExpr -> p
+lengthTerms (Add _ e2) = 1 + lengthTerms e2
+lengthTerms _ = 0
+
+sortTerms :: MathExpr -> MathExpr
+sortTerms e1 = foldr1 (.) (replicate n bubbleTerms) e1 
+    where n = lengthTerms e1
+
+bubbleTerms :: MathExpr -> MathExpr
+bubbleTerms (Add e1 (Add e2 e3))
+    | e2 < e1   = Add e2 $ bubbleTerms (Add e1 e3)
+    | otherwise = Add e1 $ bubbleTerms (Add e2 e3)
+bubbleTerms (Add e1 e2)
+    | e2 < e1   = Add e2 e1
+    | otherwise = Add e1 e2
+bubbleTerms e1 = e1
 
 {- |
-Does a single symbolic simplification step. The trivial case is simply 
-unwrapping a doubled up symbolic:
-    >>> symbolicStep $ Symbolic (Symbolic e)
+Does a single symbolic simplification step. The trivial case is seeing a variable:
+    >>> symbolicStep $ Symbolic e
     Symbolic e
 -}
 symbolicStep :: MathExpr -> MathExpr
--- symbolicStep (Symbolic s) = case s of
---     Symbolic s1 -> Symbolic s1
+symbolicStep (Symbolic s) = Symbolic $ symbolicStep s
+symbolicStep s = trace (show s) $ case s of
+    Add (Var x1) (Var x2) 
+        | x1 == x2                  -> Mul (N 2) (Var x1)
+    Add v1 v2 
+        | all isAtom [v1, v2]       -> Add v2 v1
+    Add v1 e2 
+        | isAtom v1                 -> Add v1 (symbolicStep e2)
+    Add e1 e2                       -> Add (symbolicStep e1) e2
+    Mul (Var x1) (Var x2) 
+        | x1 == x2                  -> Exp (Var x1) (N 2)
+    N n1                            -> N n1
+    Var x1                          -> Var x1
 --     N n -> N n
 --     Var x -> _
 --     Neg e1 -> _
 --     Add e1 e2 -> _
 --     Recip e1 -> _
 --     Mul e1 e2 -> _
-symbolicStep _ = error "cannot perform symbolicStep on non-symbolic expr"
+    _                           -> s
+
+mulOrd :: MathExpr -> MathExpr -> Ordering
+N _ `mulOrd` _ = LT
+Var x1 `mulOrd` Var x2 = compare x1 x2
+mulOrd _ _ = EQ 
+
 
 {- TODO: Eval step has a symmetry for all one argument and two argument operations !!!! -}
 
@@ -166,11 +225,11 @@ symbolicStep _ = error "cannot perform symbolicStep on non-symbolic expr"
 -- numericalAssociatedOperation (Neg (N a)) = -a
 -- numericalAssociatedOperation (Neg (N a)) = -a
 
--- twoArgumentCase :: (MathExpr -> MathExpr -> MathExpr) -> MathExpr -> MathExpr -> MathExpr
--- twoArgumentCase op (Symbolic s1) (Symbolic s2) = Symbolic (op s1 s2)
--- twoArgumentCase op (Symbolic s1) n2@(N _)      = Symbolic (op s1 n2)
--- twoArgumentCase op n1@(N _) (Symbolic s2)      = Symbolic (op n1 s2)
--- twoArgumentCase op (N n1) (N n2)               = N (numericalAssociatedOperation (op n1 n2))
--- twoArgumentCase op v1 e2 | isBasic v1          = op v1 (evalStep e2)
--- twoArgumentCase op e1 e2                       = op (evalStep e1) e2
-
+-- Alternative symbolics function
+-- twoArgumentCase :: (MathExpr -> MathExpr -> MathExpr)-> (Float -> Float -> Float) -> MathExpr -> MathExpr -> MathExpr
+-- twoArgumentCase mathExprOp _ e1@(Symbolic _) e2@(Symbolic _)    = Symbolic (mathExprOp e1 e2)
+-- twoArgumentCase mathExprOp _ e1@(Symbolic _) n2@(N _)         = Symbolic (mathExprOp e1 n2)
+-- twoArgumentCase mathExprOp _ n1@(N _) e2@(Symbolic _)         = Symbolic (mathExprOp n1 e2)
+-- twoArgumentCase _ floatOp (N n1) (N n2)                     = N (n1 `floatOp` n2)
+-- twoArgumentCase mathExprOp _ v1 e2 | isAtom v1             = mathExprOp v1 (evalStep e2)
+-- twoArgumentCase mathExprOp _ e1 e2                          = mathExprOp (evalStep e1) e2
